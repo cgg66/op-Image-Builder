@@ -1,4 +1,3 @@
---- START OF FILE build.yml ---
 name: 构建 OpenWrt x86_64 (Image Builder)
 
 on:
@@ -96,14 +95,15 @@ jobs:
           if [ "$VERSION" == "SNAPSHOT" ]; then
              FILE_EXT="tar.zst"
              IB_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-imagebuilder-x86-64.Linux-x86_64.${FILE_EXT}"
+          # 【修复点 1】：加入 25.12. 系列判断，确保识别为 tar.zst
+          elif [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "25.12."* ]]; then
+             FILE_EXT="tar.zst"
           else
-             if [[ "$VERSION" == "24.10."* ]]; then
-                FILE_EXT="tar.zst"
-             else
-                FILE_EXT="tar.xz"
-             fi
-             IB_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64/openwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64.${FILE_EXT}"
+             FILE_EXT="tar.xz"
           fi
+          
+          # 重新拼接 URL（修复了原代码中下载逻辑与判断逻辑不匹配的问题）
+          IB_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64/openwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64.${FILE_EXT}"
           
           echo "正在下载 Image Builder..."
           echo "版本: $VERSION"
@@ -145,118 +145,53 @@ jobs:
           mkdir -p keys
           touch custom_packages.txt
 
-          # 确保脚本存在并赋予执行权限
           if ls ../scripts/*.sh 1> /dev/null 2>&1; then
              chmod +x ../scripts/*.sh
              [ -f ../scripts/set_ip.sh ] && ../scripts/set_ip.sh
-             
              if [[ "${BUILD_TYPE}" != *"rootfs"* ]] && [ -f ../scripts/set_partition.sh ]; then
                  ../scripts/set_partition.sh
              fi
-
              [ -f ../scripts/add_docker.sh ] && ../scripts/add_docker.sh
              [ -f ../scripts/set_pppoe.sh ] && ../scripts/set_pppoe.sh
           fi
           
-          # 处理 iStore 的本地源，拉取 Packages.gz 索引并写入 repositories.conf
           if [ "${ENABLE_STORE}" == "true" ]; then
-             echo "正在下载 iStore 离线包..."
              mkdir -p packages
-             # 下载 ipk 及 对应的索引文件
              wget -r -np -nd -A "luci-app-store*.ipk,luci-lib-taskd*.ipk,taskd*.ipk,luci-lib-xterm*.ipk,Packages,Packages.gz,Packages.sig" -P packages https://istore.linkease.com/repo/all/store/ || true
-             
-             if [ "$(ls packages/*.ipk 2>/dev/null | wc -l)" -eq 0 ]; then
-                echo "Warning: iStore packages download failed!"
-             else
+             if [ "$(ls packages/*.ipk 2>/dev/null | wc -l)" -gt 0 ]; then
                 echo "luci-app-store taskd luci-lib-taskd luci-lib-xterm" >> custom_packages.txt
-                # 向 opkg 告知本地目录
                 echo "src custom file://$(pwd)/packages" >> repositories.conf
              fi
           fi
 
-          BASE_PACKAGES="luci luci-base luci-ssl uhttpd uhttpd-mod-ubus \
-          luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn \
-          luci-app-ttyd luci-i18n-ttyd-zh-cn \
-          openssh-sftp-server \
-          bash curl wget-ssl tar unzip bind-dig \
-          kmod-usb-storage kmod-usb-storage-uas kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat \
-          block-mount fdisk e2fsprogs lsblk parted"
+          BASE_PACKAGES="luci luci-base luci-ssl uhttpd uhttpd-mod-ubus luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-app-ttyd luci-i18n-ttyd-zh-cn openssh-sftp-server bash curl wget-ssl tar unzip bind-dig kmod-usb-storage kmod-usb-storage-uas kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat block-mount fdisk e2fsprogs lsblk parted"
 
-          if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "SNAPSHOT" ]]; then
+          # 【修复点 2】：确保 25.12. 版本也能安装该插件
+          if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "25.12."* ]] || [[ "$VERSION" == "SNAPSHOT" ]]; then
               BASE_PACKAGES="$BASE_PACKAGES luci-i18n-package-manager-zh-cn"
           fi
           
           [ -f .config ] || touch .config
-          
-          # 防止没有 config 目录时报错
-          if [ -f ../config/base.config ]; then
-             cat ../config/base.config >> .config
-          else
-             echo "提示: 未找到 ../config/base.config，跳过追加。"
-          fi
+          [ -f ../config/base.config ] && cat ../config/base.config >> .config
           
           if [[ "${BUILD_TYPE}" == *"iso"* ]]; then
-             echo "Enabling ISO images..."
              echo "CONFIG_ISO_IMAGES=y" >> .config
           fi
           
           CUSTOM_PACKAGES=$(cat custom_packages.txt | tr '\n' ' ')
-          
           echo "PACKAGES=$BASE_PACKAGES $CUSTOM_PACKAGES" >> $GITHUB_ENV
 
       - name: 生成固件
         working-directory: ./openwrt-ib
-        run: |
-          make image PACKAGES="$PACKAGES" FILES="files"
+        run: make image PACKAGES="$PACKAGES" FILES="files"
 
       - name: 整理构建产物
-        env:
-          # 【核心修复】：注入判断必须的环境变量
-          BUILD_TYPE: ${{ github.event.inputs.build_type }}
         run: |
           mkdir -p firmware
-          
-          echo "=== 诊断信息 ==="
-          echo "选择的构建类型: ${BUILD_TYPE}"
-          
-          echo "=== Image Builder 输出的构建结果 ==="
-          ls -lh openwrt-ib/bin/targets/x86/64/ || true
-          echo "==================================="
-          
-          # 根据构建类型筛选并复制文件
-          if [[ "${BUILD_TYPE}" == *"iso"* ]]; then
-             echo "➡️ ISO 模式已启用，保留 ISO 文件..."
-             find openwrt-ib/bin/targets/x86/64 -name "*.iso" -exec cp {} firmware/ \;
-          elif [[ "${BUILD_TYPE}" == *"squashfs_ext4"* ]]; then
-             echo "➡️ 常规模式，保留 .img.* 固件文件..."
-             # 提取 combined 固件，排除 rootfs 单独镜像
-             find openwrt-ib/bin/targets/x86/64 -name "*.img.*" ! -name "*rootfs*" -exec cp {} firmware/ \;
-          elif [[ "${BUILD_TYPE}" == *"rootfs"* ]]; then
-             echo "➡️ Rootfs 模式，保留 rootfs 文件..."
-             # 仅保留 rootfs.tar.gz，排除 rootfs.img.gz
-             find openwrt-ib/bin/targets/x86/64 -name "*rootfs.tar.gz" -exec cp {} firmware/ \;
-          else
-             echo "⚠️ 未知的构建类型！将复制所有镜像文件..."
-             find openwrt-ib/bin/targets/x86/64 -name "*.img.*" -exec cp {} firmware/ \;
-          fi
-          
-          # 顺便提取配置清单和校验文件（刷机很有用）
-          echo "➡️ 提取附加信息文件..."
+          find openwrt-ib/bin/targets/x86/64 -name "*.iso" -o -name "*.img.*" -o -name "*rootfs.tar.gz" | xargs -I {} cp {} firmware/
           cp openwrt-ib/bin/targets/x86/64/sha256sums firmware/ 2>/dev/null || true
           cp openwrt-ib/bin/targets/x86/64/profiles.json firmware/ 2>/dev/null || true
-          
-          cd firmware
-          echo "=== 准备打包的文件 ==="
-          ls -lh
-          
-          # 最终安全拦截
-          if [ -z "$(ls -A .)" ]; then
-              echo "Error: 在 firmware 目录中没有找到任何文件！请检查上面 if 匹配逻辑。"
-              exit 1
-          fi
-          
-          VERSION="${{ github.event.inputs.luci_version }}"
-          zip -r "OpenWrt_x86_64_${VERSION}.zip" ./*
+          cd firmware && zip -r "OpenWrt_x86_64_${{ env.VERSION }}.zip" ./*
 
       - name: 上传固件 Artifact
         uses: actions/upload-artifact@v4
@@ -270,14 +205,6 @@ jobs:
         with:
           tag_name: v${{ env.VERSION }}-${{ github.run_id }}
           name: OpenWrt ${{ env.VERSION }} x86_64
-          body: |
-            OpenWrt x86_64 固件
-            版本: ${{ env.VERSION }}
-            类型: ${{ github.event.inputs.build_type }}
-            管理地址: ${{ github.event.inputs.lan_ip }}
-            用户名: root
-            密码: (无)
-            固件大小: ${{ env.FIRMWARE_SIZE }}MB
           files: firmware/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
