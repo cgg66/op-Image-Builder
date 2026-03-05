@@ -168,21 +168,12 @@ jobs:
              fi
 
              if [ "$IS_APK" == "true" ]; then
-                echo "检测到新版 APK 环境，将通过 uci-defaults 实现首次开机自动安装 iStore..."
-                # 针对 APK 架构，由于 Image Builder 无法预装不带索引的 .ipk，我们改用开机脚本安装
-                mkdir -p files/etc/uci-defaults
-                cat <<EOF > files/etc/uci-defaults/99-install-istore
-#!/bin/sh
-# 等待网络就绪后尝试安装 iStore
-(
-  sleep 10
-  # 尝试添加 opkg 兼容源并安装（如果系统包含 opkg-apk 兼容层）
-  # 或者直接从远程下载并尝试安装
-  apk add --allow-untrusted https://istore.linkease.com/repo/all/store/luci-app-store_0.1.32-1_all.ipk || true
-) &
-exit 0
-EOF
-                chmod +x files/etc/uci-defaults/99-install-istore
+                echo "检测到新版 APK 环境，添加 iStore 官方远程 APK 源..."
+                # 添加核心源（包含基础依赖）
+                echo "https://istore.linkease.com/repo/all/packages" >> repositories.conf
+                # 添加商店源
+                echo "https://istore.linkease.com/repo/all/store" >> repositories.conf
+                echo "luci-app-store taskd luci-lib-taskd luci-lib-xterm" >> custom_packages.txt
              else
                 # 传统的 opkg 逻辑，下载 ipk 到本地并生成索引
                 echo "检测到传统 OPKG 环境，下载离线包..."
