@@ -15,9 +15,10 @@ on:
       luci_version:
         description: 'OpenWrt 版本'
         required: true
-        default: '24.10.5'
+        default: '25.12.0'
         type: choice
         options:
+          - '25.12.0'
           - '24.10.5'
           - '24.10.4'
           - '24.10.3'
@@ -95,7 +96,7 @@ jobs:
              FILE_EXT="tar.zst"
              IB_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-imagebuilder-x86-64.Linux-x86_64.${FILE_EXT}"
           else
-             if [[ "$VERSION" == "24.10."* ]]; then
+             if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "25.12."* ]]; then
                 FILE_EXT="tar.zst"
              else
                 FILE_EXT="tar.xz"
@@ -180,7 +181,7 @@ jobs:
           kmod-usb-storage kmod-usb-storage-uas kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat \
           block-mount fdisk e2fsprogs lsblk parted"
 
-          if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "SNAPSHOT" ]]; then
+          if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "25.12."* ]] || [[ "$VERSION" == "SNAPSHOT" ]]; then
               BASE_PACKAGES="$BASE_PACKAGES luci-i18n-package-manager-zh-cn"
           fi
           
