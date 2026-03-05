@@ -1,0 +1,149 @@
+name: 构建 OpenWrt 25.12.0 (Image Builder)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '固件构建类型'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - 'both'
+          - 'squashfs_ext4'
+          - 'rootfs'
+      firmware_size:
+        description: '自定义固件分区大小 (MB) [仅对 squashfs_ext4 有效]'
+        required: true
+        default: '2048'
+      lan_ip:
+        description: '路由器管理地址 (LAN IP)'
+        required: true
+        default: '192.168.1.1'
+
+env:
+  VERSION: '25.12.0'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 初始化构建环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 python3-setuptools python3-pyelftools zstd genisoimage xorriso mtools
+
+      - name: 下载 Image Builder
+        run: |
+          # 25.12.x 版本及之后通常使用 tar.zst
+          # 尝试下载 .zst，如果失败尝试 .xz
+          IB_BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64"
+          IB_FILE_PREFIX="openwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64"
+          
+          echo "正在尝试下载 Image Builder..."
+          echo "版本: $VERSION"
+          
+          if wget -q --spider "${IB_BASE_URL}/${IB_FILE_PREFIX}.tar.zst"; then
+             FILE_EXT="tar.zst"
+          else
+             FILE_EXT="tar.xz"
+          fi
+          
+          IB_URL="${IB_BASE_URL}/${IB_FILE_PREFIX}.${FILE_EXT}"
+          echo "下载地址: $IB_URL"
+          
+          if ! wget -qO openwrt-ib.${FILE_EXT} "$IB_URL"; then
+             echo "Error: 下载失败！请检查版本号 $VERSION 是否存在。"
+             exit 1
+          fi
+          
+          echo "正在解压..."
+          mkdir -p openwrt-ib
+          if [[ "$FILE_EXT" == "tar.zst" ]]; then
+            tar -I zstd -xf openwrt-ib.${FILE_EXT} -C openwrt-ib --strip-components=1
+          else
+            tar -xf openwrt-ib.${FILE_EXT} -C openwrt-ib --strip-components=1
+          fi
+
+      - name: 配置构建参数
+        working-directory: ./openwrt-ib
+        env:
+          LAN_IP: ${{ github.event.inputs.lan_ip }}
+          FIRMWARE_SIZE: ${{ github.event.inputs.firmware_size }}
+          BUILD_TYPE: ${{ github.event.inputs.build_type }}
+        run: |
+          echo "FIRMWARE_SIZE=$FIRMWARE_SIZE" >> $GITHUB_ENV
+          
+          mkdir -p files/etc/uci-defaults
+          touch custom_packages.txt
+
+          # 确保脚本存在并赋予执行权限
+          if ls ../scripts/*.sh 1> /dev/null 2>&1; then
+             chmod +x ../scripts/*.sh
+             [ -f ../scripts/set_ip.sh ] && ../scripts/set_ip.sh
+             
+             # 如果不是纯 rootfs 模式，则设置分区大小
+             if [[ "${BUILD_TYPE}" != "rootfs" ]] && [ -f ../scripts/set_partition.sh ]; then
+                 ../scripts/set_partition.sh
+             fi
+          fi
+          
+          # 基础包列表
+          BASE_PACKAGES="luci luci-base luci-ssl uhttpd uhttpd-mod-ubus \
+          luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn \
+          luci-app-ttyd luci-i18n-ttyd-zh-cn \
+          openssh-sftp-server \
+          bash curl wget-ssl tar unzip bind-dig \
+          kmod-usb-storage kmod-usb-storage-uas kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat \
+          block-mount fdisk e2fsprogs lsblk parted luci-i18n-package-manager-zh-cn"
+
+          [ -f .config ] || touch .config
+          
+          # 追加基础配置
+          if [ -f ../config/base.config ]; then
+             cat ../config/base.config >> .config
+          fi
+          
+          CUSTOM_PACKAGES=$(cat custom_packages.txt | tr '\n' ' ')
+          echo "PACKAGES=$BASE_PACKAGES $CUSTOM_PACKAGES" >> $GITHUB_ENV
+
+      - name: 生成固件
+        working-directory: ./openwrt-ib
+        run: |
+          make image PACKAGES="$PACKAGES" FILES="files"
+
+      - name: 整理构建产物
+        env:
+          BUILD_TYPE: ${{ github.event.inputs.build_type }}
+        run: |
+          mkdir -p firmware
+          
+          # 根据构建类型筛选并复制文件
+          if [[ "${BUILD_TYPE}" == "squashfs_ext4" ]]; then
+             find openwrt-ib/bin/targets/x86/64 -name "*.img.gz" ! -name "*rootfs*" -exec cp {} firmware/ \;
+          elif [[ "${BUILD_TYPE}" == "rootfs" ]]; then
+             find openwrt-ib/bin/targets/x86/64 -name "*rootfs.tar.gz" -exec cp {} firmware/ \;
+          elif [[ "${BUILD_TYPE}" == "both" ]]; then
+             find openwrt-ib/bin/targets/x86/64 -name "*.img.gz" ! -name "*rootfs*" -exec cp {} firmware/ \;
+             find openwrt-ib/bin/targets/x86/64 -name "*rootfs.tar.gz" -exec cp {} firmware/ \;
+          fi
+          
+          # 提取附加信息
+          cp openwrt-ib/bin/targets/x86/64/sha256sums firmware/ 2>/dev/null || true
+          cp openwrt-ib/bin/targets/x86/64/profiles.json firmware/ 2>/dev/null || true
+          
+          cd firmware
+          ls -lh
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-25.12.0-Firmware
+          path: firmware/*
