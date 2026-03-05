@@ -157,18 +157,44 @@ jobs:
              [ -f ../scripts/set_pppoe.sh ] && ../scripts/set_pppoe.sh
           fi
           
-          # 处理 iStore 的本地源，拉取 Packages.gz 索引并写入 repositories.conf
+          # 处理 iStore 的本地源，拉取索引并写入 repositories.conf
           if [ "${ENABLE_STORE}" == "true" ]; then
              echo "正在下载 iStore 离线包..."
              mkdir -p packages
-             # 下载 ipk 及 对应的索引文件
-             wget -r -np -nd -A "luci-app-store*.ipk,luci-lib-taskd*.ipk,taskd*.ipk,luci-lib-xterm*.ipk,Packages,Packages.gz,Packages.sig" -P packages https://istore.linkease.com/repo/all/store/ || true
              
-             if [ "$(ls packages/*.ipk 2>/dev/null | wc -l)" -eq 0 ]; then
+             # 判断是否为新版 apk 环境 (24.10, 25.12, SNAPSHOT)
+             IS_APK=false
+             if [[ "$VERSION" == "24.10."* ]] || [[ "$VERSION" == "25.12."* ]] || [[ "$VERSION" == "SNAPSHOT" ]]; then
+                IS_APK=true
+             fi
+
+             if [ "$IS_APK" == "true" ]; then
+                echo "检测到新版 APK 环境，尝试下载 .apk 文件和 packages.adb 索引..."
+                # 扩展匹配规则以包含 .apk 和 packages.adb
+                wget -r -np -nd -A "luci-app-store*,luci-lib-taskd*,taskd*,luci-lib-xterm*,Packages*,packages.adb" -P packages https://istore.linkease.com/repo/all/store/ || true
+                
+                # 如果没有下载到 packages.adb，尝试使用 IB 自带的 apk 工具生成索引
+                if [ ! -f packages/packages.adb ]; then
+                   echo "未发现 packages.adb，尝试寻找 IB 内部的 apk 工具生成索引..."
+                   APK_TOOL=$(find ./staging_dir/host/bin -name apk -type f | head -n 1)
+                   if [ -n "$APK_TOOL" ] && [ "$(ls packages/*.apk 2>/dev/null | wc -l)" -gt 0 ]; then
+                      echo "使用 $APK_TOOL 生成索引..."
+                      chmod +x "$APK_TOOL"
+                      "$APK_TOOL" index -o packages/packages.adb packages/*.apk
+                   elif [ -n "$APK_TOOL" ] && [ "$(ls packages/*.ipk 2>/dev/null | wc -l)" -gt 0 ]; then
+                      echo "未发现 .apk 文件，但有 .ipk 文件。注意：新版 OpenWrt 可能不兼容 .ipk 离线源。"
+                   fi
+                fi
+             else
+                # 传统的 opkg 逻辑
+                wget -r -np -nd -A "luci-app-store*.ipk,luci-lib-taskd*.ipk,taskd*.ipk,luci-lib-xterm*.ipk,Packages,Packages.gz,Packages.sig" -P packages https://istore.linkease.com/repo/all/store/ || true
+             fi
+             
+             if [ "$(ls packages/*.ipk 2>/dev/null | wc -l)" -eq 0 ] && [ "$(ls packages/*.apk 2>/dev/null | wc -l)" -eq 0 ]; then
                 echo "Warning: iStore packages download failed!"
              else
                 echo "luci-app-store taskd luci-lib-taskd luci-lib-xterm" >> custom_packages.txt
-                # 向 opkg 告知本地目录
+                # 向 Image Builder 告知本地目录 (apk 版 IB 也会读取此文件)
                 echo "src custom file://$(pwd)/packages" >> repositories.conf
              fi
           fi
