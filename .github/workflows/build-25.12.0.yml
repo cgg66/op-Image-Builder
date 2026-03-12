@@ -104,9 +104,11 @@ jobs:
           BASE_PACKAGES="luci luci-base luci-ssl uhttpd uhttpd-mod-ubus \
           luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn \
           luci-app-ttyd luci-i18n-ttyd-zh-cn \
+          luci-app-firewall \
           openssh-sftp-server \
           bash curl wget-ssl tar unzip bind-dig \
           kmod-usb-storage kmod-usb-storage-uas kmod-fs-ext4 kmod-fs-vfat kmod-fs-exfat \
+          kmod-r8169 kmod-e1000e kmod-igb kmod-vmxnet3 kmod-virtio-net \
           block-mount fdisk e2fsprogs lsblk parted luci-i18n-package-manager-zh-cn"
 
           [ -f .config ] || touch .config
@@ -130,13 +132,14 @@ jobs:
         run: |
           mkdir -p firmware
           
-          # 根据构建类型筛选并复制文件
-          if [[ "${BUILD_TYPE}" == "squashfs_ext4" ]]; then
-             find openwrt-ib/bin/targets/x86/64 -name "*.img.gz" ! -name "*rootfs*" -exec cp {} firmware/ \;
-          elif [[ "${BUILD_TYPE}" == "rootfs" ]]; then
-             find openwrt-ib/bin/targets/x86/64 -name "*rootfs.tar.gz" -exec cp {} firmware/ \;
-          elif [[ "${BUILD_TYPE}" == "both" ]]; then
-             find openwrt-ib/bin/targets/x86/64 -name "*.img.gz" ! -name "*rootfs*" -exec cp {} firmware/ \;
+          # 根据构建类型筛选并复制文件 (x86_64 包含多种后缀)
+          if [[ "${BUILD_TYPE}" == "squashfs_ext4" || "${BUILD_TYPE}" == "both" ]]; then
+             # 提取 combined 固件，包含压缩和未压缩版本
+             find openwrt-ib/bin/targets/x86/64 -name "*combined-*.img*" ! -name "*rootfs*" -exec cp {} firmware/ \;
+          fi
+          
+          if [[ "${BUILD_TYPE}" == "rootfs" || "${BUILD_TYPE}" == "both" ]]; then
+             # 仅保留 rootfs.tar.gz
              find openwrt-ib/bin/targets/x86/64 -name "*rootfs.tar.gz" -exec cp {} firmware/ \;
           fi
           
